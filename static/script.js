@@ -478,6 +478,8 @@ async function crashLeader(clientId) {
     }, 5000);
   }
 }
+
+function blinkBorder(id, colour) {
   const el = document.getElementById(id);
   if (!el) return;
   const orig = el.style.borderColor;
@@ -536,19 +538,17 @@ function pollState() {
   fetch("/api/state")
     .then(r => r.json())
     .then(state => {
+      setConnStatus(true);
       if (state.lock)    renderLock(state.lock);
       if (state.clients) renderClients(state.clients);
       if (state.db && _LIVE) renderDB(state.db);
     })
-    .catch(() => {});
+    .catch(() => { setConnStatus(false); });
 }
 setInterval(pollState, 2000);
 
 // ─────────────────────────────────────────
-// Boot
+// Boot – script is at bottom of <body>, DOM is already ready
 // ─────────────────────────────────────────
-document.addEventListener("DOMContentLoaded", () => {
-  connectSSE();
-  // Load initial state
-  fetch("/api/state").then(r => r.json()).then(applyState);
-});
+connectSSE();
+fetch("/api/state").then(r => r.json()).then(applyState).catch(() => {});
