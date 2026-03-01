@@ -232,7 +232,7 @@ def leader_work_loop(conn):
 
         # Keepalive — refresh the lease TTL
         try:
-            _etcd.refresh_lease(_lease.id)
+            _etcd.refresh_lease(_lease)   # pass Lease object, NOT _lease.id
         except Exception as exc:
             log.warning("Lease keepalive failed: %s", exc)
             break

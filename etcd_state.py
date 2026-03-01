@@ -114,24 +114,39 @@ def get_cluster_members() -> List[Dict]:
 def get_client_presence() -> Dict[str, Dict]:
     """
     Read /clients/<id>/status keys that each client.py writes.
-    Returns { "client-1": { "alive": True/False, ... }, ... }
+    Dynamically discovers any registered clients then overlays lock ownership.
+    Returns { <client_id>: { "alive": bool, ... }, ... }
     """
     client = _get_etcd()
-    presence = {
-        "client-1": {"client_id": "client-1", "system": "System1", "role": "idle",  "has_lock": False, "alive": False},
-        "client-2": {"client_id": "client-2", "system": "System2", "role": "idle",  "has_lock": False, "alive": False},
+    # Default skeleton for the two known IDs so the UI always has something to render
+    presence: Dict[str, Dict] = {
+        "client-1": {"client_id": "client-1", "system": "System1", "role": "idle", "has_lock": False, "alive": False},
+        "client-2": {"client_id": "client-2", "system": "System2", "role": "idle", "has_lock": False, "alive": False},
     }
     if not client:
         return presence
     try:
         for val, meta in client.get_prefix("/clients/"):
             key = meta.key.decode()
-            # key = /clients/client-1/status
+            # key = /clients/<client_id>/status
             parts = key.strip("/").split("/")
             if len(parts) == 3 and parts[2] == "status":
-                cid = parts[1]
-                if cid in presence:
-                    presence[cid]["alive"] = (val.decode() == "alive")
+                raw_cid = parts[1]   # may be "2", "client-2", etc.
+                alive   = (val.decode() == "alive")
+
+                # Map bare numeric/short IDs to canonical client-N names
+                if raw_cid in presence:
+                    cid = raw_cid
+                elif raw_cid.isdigit():
+                    # "1" → "client-1", "2" → "client-2"
+                    cid = f"client-{raw_cid}"
+                else:
+                    # Unknown id — add dynamically
+                    cid = raw_cid
+                    sys_n = "System2" if raw_cid.endswith("2") else "System1"
+                    presence[cid] = {"client_id": cid, "system": sys_n, "role": "idle", "has_lock": False, "alive": False}
+
+                presence[cid]["alive"] = alive
     except Exception as exc:
         log.debug("get_client_presence error: %s", exc)
     return presence
@@ -265,6 +280,13 @@ def get_total_writes() -> int:
 _last_lock_state:   Dict = {}
 _last_total_writes: int  = 0
 
+def _normalize_client_id(raw: str) -> str:
+    """Map short IDs like '1','2' to canonical 'client-1','client-2'."""
+    if raw and raw.isdigit():
+        return f"client-{raw}"
+    return raw
+
+
 def snapshot() -> Dict[str, Any]:
     """
     Build and return a JSON-serialisable snapshot of LIVE state.
@@ -276,6 +298,10 @@ def snapshot() -> Dict[str, Any]:
     presence = get_client_presence()
     lock     = get_lock_state()
     db       = get_db_writes()
+
+    # Normalise the lock holder ID so it always matches the presence keys
+    if lock.get("held_by"):
+        lock["held_by"] = _normalize_client_id(lock["held_by"])
 
     # Enrich presence dicts with lock info
     for cid, cdata in presence.items():
