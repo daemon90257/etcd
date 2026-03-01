@@ -20,7 +20,8 @@ COPY templates/ templates/
 COPY static/ static/
 
 ENV PYTHONUNBUFFERED=1 \
-    PORT=8000
+    PORT=8000 \
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 EXPOSE 8000
 

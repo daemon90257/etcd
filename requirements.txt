@@ -7,9 +7,10 @@ python-dotenv>=1.0.0
 
 # ── etcd client ───────────────────────────────────────
 # etcd3 uses gRPC under the hood; grpcio must be installed separately
+# PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python must be set at runtime
+# so etcd3's old stubs work with modern protobuf
 etcd3>=0.12.0
 grpcio>=1.60.0
-protobuf>=3.19.0,<4.0.0
 
 # ── PostgreSQL ────────────────────────────────────────
 psycopg2-binary>=2.9.9
