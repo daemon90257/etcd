@@ -11,37 +11,51 @@ const _LIVE = (typeof LIVE_MODE !== "undefined") ? LIVE_MODE : false;
 // ─────────────────────────────────────────
 const LEASE_TTL_MAX = 15;  // sync with LEASE_TTL in client.py
 
-let evtSource  = null;
-let logCount   = 0;
+let evtSource    = null;
+let logCount     = 0;
 let _currentLeaderId = null;   // tracks who holds the lock right now
 let _totalWrites     = 0;
 let _sseRetries      = 0;
+let _pollTimer       = null;
+let _lastLeader      = null;   // detect leader changes between polls
 
 // ─────────────────────────────────────────
-// SSE connection
+// Polling (replaces SSE – Railway CDN buffers SSE streams)
 // ─────────────────────────────────────────
 function connectSSE() {
-  if (evtSource) evtSource.close();
-  evtSource = new EventSource("/api/stream");
+  // Use polling instead of SSE so Railway's Fastly CDN doesn't buffer events.
+  // Poll /api/state every 2s; synthesise events from state diffs.
+  if (_pollTimer) clearInterval(_pollTimer);
+  pollOnce();  // immediate first fetch
+  _pollTimer = setInterval(pollOnce, 2000);
+}
 
-  evtSource.onopen = () => {
-    _sseRetries = 0;
-    setConnStatus(true);
-  };
+function pollOnce() {
+  fetch("/api/state")
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(data => {
+      setConnStatus(true);
+      _sseRetries = 0;
+      handleEvent({ type: "state_update", ...data });
 
-  evtSource.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    handleEvent(data);
-  };
-
-  evtSource.onerror = () => {
-    setConnStatus(false);
-    appendLog("[SSE] Connection error – retrying…", "highlight-red");
-    _sseRetries++;
-    // Exponential backoff up to 10s
-    const delay = Math.min(10000, 500 * Math.pow(2, _sseRetries));
-    setTimeout(connectSSE, delay);
-  };
+      // Synthesise discrete events from state changes so the log stays lively
+      const newLeader = data.lock && data.lock.held_by ? data.lock.held_by : null;
+      if (newLeader !== _lastLeader) {
+        if (newLeader) {
+          appendLog(`Lock ACQUIRED by ${newLeader}`, "highlight-green");
+          handleEvent({ type: "lock_acquired", client_id: newLeader });
+        } else if (_lastLeader) {
+          appendLog(`Lock RELEASED by ${_lastLeader}`, "highlight-orange");
+          handleEvent({ type: "lock_released", client_id: _lastLeader });
+        }
+        _lastLeader = newLeader;
+      }
+    })
+    .catch(() => {
+      _sseRetries++;
+      setConnStatus(false);
+      if (_sseRetries === 1) appendLog("[Poll] Connection error – retrying…", "highlight-red");
+    });
 }
 
 // ─────────────────────────────────────────
