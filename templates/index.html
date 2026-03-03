@@ -31,6 +31,10 @@
       <button id="btn-start" class="btn btn-green" onclick="startWorkflow()">▶ Run Workflow</button>
       <button id="btn-reset" class="btn btn-gray"  onclick="resetWorkflow()">↺ Reset</button>
       {% endif %}
+      <button id="btn-trigger-failure" class="btn btn-orange" onclick="triggerFailure()"
+              title="Crash the active leader to demo Step 4 – Failure &amp; Recovery">
+        ⚡ Step 4: Crash Leader
+      </button>
       <button id="btn-crash" class="btn btn-red hidden" onclick="crashLeader()">💥 Crash Leader</button>
     </div>
   </div>

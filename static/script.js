@@ -531,6 +531,37 @@ async function resetWorkflow() {
   await fetch("/api/reset", { method: "POST" });
 }
 
+/**
+ * Trigger Step 4 (Failure & Recovery) from the header button.
+ * Works whether or not a client currently holds the lock.
+ */
+async function triggerFailure() {
+  const btn = document.getElementById("btn-trigger-failure");
+  if (btn) { btn.disabled = true; btn.textContent = "⏱ Triggering…"; }
+
+  try {
+    const res  = await fetch("/api/trigger_failure", { method: "POST" });
+    const json = await res.json();
+    if (json.status === "noop") {
+      alert(json.reason || "Start the simulation first (▶ Run Workflow).");
+    } else {
+      const target = json.target || json.crashed || "leader";
+      appendLog(`⚡ Step 4 triggered — crashing ${target}`, "highlight-red");
+      const sysBox = target === "client-1" ? "sys1-box" : "sys2-box";
+      document.getElementById(sysBox)?.classList.add("will-crash");
+      showModal("⚡", "Step 4 – Failure Triggered",
+        `Crash signal sent to ${target}. The etcd lease will expire in up to ${LEASE_TTL_MAX}s, ` +
+        `then the other client will acquire the lock and become the new Application Leader.`);
+    }
+  } catch (e) {
+    appendLog(`[ERROR] trigger_failure: ${e}`, "highlight-red");
+  } finally {
+    setTimeout(() => {
+      if (btn) { btn.disabled = false; btn.textContent = "⚡ Step 4: Crash Leader"; }
+    }, 8000);
+  }
+}
+
 // ─────────────────────────────────────────
 // TTL bar + live state periodic refresh
 // ─────────────────────────────────────────

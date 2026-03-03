@@ -39,6 +39,13 @@ _event_queue: queue.Queue                   = queue.Queue()
 _watch_thread: Optional[threading.Thread]   = None
 _connected = False
 
+# ── Failure / Recovery demo-phase tracking ────────────────────────────────────
+# These allow the UI to advance to Steps 4 (failure) and 4b (recovery)
+# when the user manually triggers a crash.
+_demo_phase:           Optional[str] = None   # "failure" | "recovery" | None
+_demo_phase_ts:        float         = 0.0
+_demo_crashed_client:  Optional[str] = None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Connection helpers
@@ -191,9 +198,17 @@ def send_crash_signal(client_id: str) -> bool:
     """
     Write /signal/crash/<client_id> = '1' with a short lease.
     client.py watches this key and calls sys.exit() when it appears.
+    Also updates the demo-phase so the UI advances to Step 4.
     """
+    global _demo_phase, _demo_phase_ts, _demo_crashed_client
     client = _get_etcd()
     if not client:
+        # Still update phase even if etcd unreachable (offline demo)
+        _demo_phase          = "failure"
+        _demo_phase_ts       = time.time()
+        _demo_crashed_client = client_id
+        _emit("phase_change", {"phase": "failure", "step": 4,
+                                "title": "Step 4 – Failure Scenario"})
         return False
     try:
         short_lease = client.lease(5)   # auto-cleaned after 5s
@@ -203,10 +218,37 @@ def send_crash_signal(client_id: str) -> bool:
             "message":     f"Crash signal sent to {client_id} — process will exit within seconds.",
         })
         log.warning("Crash signal sent to %s", client_id)
-        return True
     except Exception as exc:
         log.error("send_crash_signal error: %s", exc)
-        return False
+    # Advance to failure phase regardless (even if etcd put failed)
+    _demo_phase          = "failure"
+    _demo_phase_ts       = time.time()
+    _demo_crashed_client = client_id
+    _log(f"⚠  Step 4 – Simulating crash of {client_id} …")
+    _emit("phase_change", {"phase": "failure", "step": 4,
+                            "title": "Step 4 – Failure Scenario"})
+    return True
+
+
+def _set_demo_phase(phase: str):
+    """Internal helper to update the demo phase and emit a phase_change event."""
+    global _demo_phase, _demo_phase_ts
+    _demo_phase    = phase
+    _demo_phase_ts = time.time()
+    titles = {
+        "failure":  "Step 4 – Failure Scenario",
+        "recovery": "Step 4 – Recovery & New Leader Election",
+    }
+    _log(f"Phase → {phase}")
+    _emit("phase_change", {"phase": phase, "step": 4, "title": titles.get(phase, phase)})
+
+
+def _clear_demo_phase():
+    """Reset failure/recovery demo state back to normal live tracking."""
+    global _demo_phase, _demo_phase_ts, _demo_crashed_client
+    _demo_phase          = None
+    _demo_phase_ts       = 0.0
+    _demo_crashed_client = None
 
 
 def clear_crash_signal(client_id: str) -> bool:
@@ -367,7 +409,7 @@ def _recent_logs() -> List[str]:
         return list(_log_buffer[-30:])
 
 def _detect_and_emit_events(lock: Dict, db: Dict):
-    global _last_lock_state, _last_total_writes
+    global _last_lock_state, _last_total_writes, _demo_phase, _demo_crashed_client
     prev_held = _last_lock_state.get("held_by")
     curr_held = lock.get("held_by")
 
@@ -379,9 +421,17 @@ def _detect_and_emit_events(lock: Dict, db: Dict):
                 "loser":     "client-2" if curr_held == "client-1" else "client-1",
                 "lease_ttl": LEASE_TTL,
             })
+            # If we were in failure phase and the OTHER client acquires the lock → recovery
+            if _demo_phase == "failure" and _demo_crashed_client and curr_held != _demo_crashed_client:
+                _set_demo_phase("recovery")
+                _log(f"♻  {curr_held} takes over as new Application Leader — recovery complete")
+                _emit("raft_leader_elected", {"leader": curr_held, "term": 0})
         elif not curr_held and prev_held:
             _log(f"🔓 Lock RELEASED — {prev_held} no longer holds the lock")
             _emit("lock_released", {"previous_holder": prev_held})
+            # If we were in failure phase and the crashed client released the lock → TTL expired
+            if _demo_phase == "failure" and prev_held == _demo_crashed_client:
+                _log(f"etcd: lease TTL expired → lock key '{LOCK_KEY}' auto-deleted")
 
     new_writes = len(db["records"])
     if new_writes > _last_total_writes and db["records"]:
@@ -459,6 +509,17 @@ def _static_node_list() -> List[Dict]:
 
 
 def _infer_phase(lock: Dict, presence: Dict) -> str:
+    global _demo_phase, _demo_phase_ts
+
+    # Honour manual failure/recovery demo phase
+    if _demo_phase is not None:
+        # Auto-expire after TTL + 35s so the UI eventually resets
+        if time.time() - _demo_phase_ts > LEASE_TTL + 35:
+            _log("Failure/recovery demo cycle complete — resuming normal operation")
+            _clear_demo_phase()
+        else:
+            return _demo_phase
+
     any_alive = any(v.get("alive") for v in presence.values())
     if not any_alive:
         return "idle"

@@ -30,7 +30,7 @@ if LIVE_MODE:
     def _snapshot():
         return etcd_state.snapshot()
 else:
-    from simulation import sim
+    from simulation import sim, NodeRole, AppClientRole
     log.info("▶  DEMO MODE – using in-memory simulation")
     _event_queue = sim.event_queue
 
@@ -78,6 +78,49 @@ def reset():
 
 
 # ── Live-only routes ──────────────────────────────────────────────────────────
+
+@app.route("/api/trigger_failure", methods=["POST"])
+def trigger_failure():
+    """
+    Trigger Step 4 (Failure & Recovery) from the UI.
+    In LIVE mode: picks whoever currently holds the lock (falls back to client-1)
+    and sends the crash signal.  In DEMO mode: jumps the simulation to the
+    failure step by crashing etcd-1/etcd-2 and releasing the lock.
+    """
+    if LIVE_MODE:
+        snap       = etcd_state.snapshot()
+        target     = (snap.get("lock") or {}).get("held_by") or "client-1"
+        ok         = etcd_state.send_crash_signal(target)
+        return jsonify({"status": "signal_sent" if ok else "phase_set", "target": target})
+
+    # Demo mode — fast-forward to failure phase
+    if not sim.running:
+        return jsonify({"status": "noop", "reason": "simulation not running – click Run Workflow first"})
+
+    winner = "client-1"
+    loser  = "client-2"
+    for cid, c in sim.clients.items():
+        if c.has_lock:
+            winner = cid
+            loser  = "client-2" if cid == "client-1" else "client-1"
+            break
+
+    sim.phase = "failure"
+    sim.step  = 4
+    sim._emit("phase_change", {"phase": "failure", "step": 4,
+                                "title": "Step 4 – Failure Scenario"})
+    sim._log(f"⚠  Manual crash triggered – simulating crash of {winner} (System1) …")
+    sim.clients[winner].has_lock = False
+    sim.clients[winner].role     = AppClientRole.IDLE
+    sim.etcd_nodes.get("etcd-1") and setattr(sim.etcd_nodes["etcd-1"], "alive", False)
+    sim.etcd_nodes.get("etcd-1") and setattr(sim.etcd_nodes["etcd-1"], "role", NodeRole.CRASHED)
+    sim.etcd_nodes.get("etcd-2") and setattr(sim.etcd_nodes["etcd-2"], "alive", False)
+    sim.etcd_nodes.get("etcd-2") and setattr(sim.etcd_nodes["etcd-2"], "role", NodeRole.CRASHED)
+    sim._release_lock(winner)
+    sim._emit("node_crash", {"crashed": ["etcd-1", "etcd-2"], "system": "System1"})
+    sim._emit("state_update", sim.snapshot())
+    return jsonify({"status": "failure_triggered", "crashed": winner})
+
 
 @app.route("/api/crash/<client_id>", methods=["POST"])
 def crash_client(client_id: str):

@@ -138,6 +138,7 @@ h1 { font-size: 1.2rem; font-weight: 600; color: var(--text); }
 .btn-green  { background: var(--green);  color: #000; }
 .btn-gray   { background: var(--bg3);   color: var(--text); border: 1px solid var(--border); }
 .btn-red    { background: var(--red);   color: #fff; }
+.btn-orange { background: var(--orange); color: #000; }
 .btn-sm     { padding: 4px 12px; font-size: 0.78rem; }
 
 /* ═══════════════ PHASE BANNER ═══════════════ */
